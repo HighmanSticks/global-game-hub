@@ -9,7 +9,7 @@ const wss = new WebSocket.Server({ port: PORT }, () => {
 });
 
 // Storage for active game rooms
-// Format: { "ROOM_CODE": { host: ws, clients: [ws1, ws2] } }
+// Format: { "ROOM_CODE": { host: ws, clients: [ws1, ws2], privacy: "PUBLIC", name: "My Server" } }
 const gameRooms = {}; 
 
 // Helper to generate a random 5-letter Room Code
@@ -31,24 +31,40 @@ wss.on('connection', (ws) => {
         if (line.length === 0) return;
 
         // 1. GLOBAL ROLE AUTHENTICATION: HOST CREATION
-        if (line === "ROLE:HOST") {
+        // Expects format: "ROLE:HOST:PRIVATE:Lobby Name" or "ROLE:HOST:PUBLIC:Lobby Name"
+        if (line.startsWith("ROLE:HOST")) {
+            const parts = line.split(":");
+            const privacy = parts[2] || "PUBLIC"; // Defaults to PUBLIC if missing
+            const lobbyName = parts.slice(3).join(":") || "Unnamed Server"; // Grabs the lobby name safely
+            
             const roomCode = generateRoomCode();
             
             ws.roomCode = roomCode;
             ws.isHost = true;
+            ws.privacy = privacy;
+            ws.lobbyName = lobbyName;
 
             gameRooms[roomCode] = {
                 host: ws,
-                clients: [ws]
+                clients: [ws],
+                privacy: privacy,
+                name: lobbyName
             };
 
-            console.log(`-> LOBBY CREATED: Code [${roomCode}]`);
+            if (privacy === "PRIVATE") {
+                console.log(`-> PRIVATE LOBBY CREATED: [${lobbyName}] Code [${roomCode}]`);
+            } else {
+                console.log(`-> PUBLIC LOBBY CREATED: [${lobbyName}] Code [${roomCode}]`);
+            }
+            
+            // Send the code back down to the bridge/host
             ws.send(`ROOM_CODE:${roomCode}`);
             return;
         }
         
         // 2. GLOBAL ROLE AUTHENTICATION: JOINER CONNECTION
-        if (line.indexOf("ROLE:CLIENT:") === 0) {
+        // Expects format: "ROLE:CLIENT:XXXXX"
+        if (line.startsWith("ROLE:CLIENT:")) {
             const targetCode = line.split(":")[2].toUpperCase();
 
             if (!gameRooms[targetCode]) {
