@@ -15,6 +15,28 @@ function generateRoomCode() {
     return code;
 }
 
+// THE FIX: Aggressive Cleanup Protocol
+function purgeOldState(ws) {
+    for (let code in gameRooms) {
+        const room = gameRooms[code];
+        
+        // If they were a Host, destroy their ghost lobby
+        if (room.host === ws) {
+            console.log(`-> Host moved on. Vaporizing Ghost Room [${code}].`);
+            room.clients.forEach(c => { if(c !== ws && c.readyState === WebSocket.OPEN) c.send("ERROR:HOST_LEFT"); });
+            delete gameRooms[code];
+        } else {
+            // If they were a Joiner, remove them so they can rejoin later without "Invalid Code"
+            const index = room.clients.indexOf(ws);
+            if (index !== -1) {
+                room.clients.splice(index, 1);
+            }
+        }
+    }
+    ws.roomCode = null;
+    ws.isHost = false;
+}
+
 wss.on('connection', (ws) => {
     ws.roomCode = null;
     ws.isHost = false;
@@ -23,13 +45,18 @@ wss.on('connection', (ws) => {
         const line = message.toString().trim();
         if (line.length === 0) return;
 
-        // BUG FIX 1: Answer the Heartbeat
+        // Keep-Alive for the bridge
         if (line === "KEEPALIVE_PING") {
             ws.send("KEEPALIVE_PONG");
             return;
         }
 
+        // ==========================================
+        // 1. BROWSER: Purge old state before fetching
+        // ==========================================
         if (line.startsWith("GET_LOBBIES:")) {
+            purgeOldState(ws); // Kill ghost lobbies before broadcasting
+            
             let lobbyStrings = [];
             for (let code in gameRooms) {
                 let room = gameRooms[code];
@@ -41,7 +68,12 @@ wss.on('connection', (ws) => {
             return;
         }
 
+        // ==========================================
+        // 2. HOSTING: Purge old state before creating
+        // ==========================================
         if (line === "ROLE:HOST") {
+            purgeOldState(ws);
+            
             const roomCode = generateRoomCode();
             ws.roomCode = roomCode;
             ws.isHost = true;
@@ -51,6 +83,8 @@ wss.on('connection', (ws) => {
         }
 
         if (line.startsWith("CREATE_PUBLIC:")) {
+            purgeOldState(ws);
+            
             const parts = line.substring(14).split("|");
             const roomName = parts[0] || "Public Match";
             const bots = parseInt(parts[1]) || 0;
@@ -62,63 +96,50 @@ wss.on('connection', (ws) => {
 
             gameRooms[roomCode] = {
                 host: ws, clients: [ws], isPublic: true, name: roomName, bots: bots, mode: mode,
-                ping: Math.floor(Math.random() * 40) + 20
+                ping: Math.floor(Math.random() * 40) + 20 
             };
             ws.send(`ROOM_CODE:${roomCode}`);
             return;
         }
         
+        // ==========================================
+        // 3. JOINING: Purge old state before connecting
+        // ==========================================
         if (line.indexOf("ROLE:CLIENT:") === 0) {
+            purgeOldState(ws); // Allows seamless re-joining!
+            
             const targetCode = line.split(":")[2].toUpperCase();
 
             if (!gameRooms[targetCode]) {
-                console.log(`-> Join attempt failed: Room [${targetCode}] does not exist.`);
                 ws.send("ERROR:ROOM_NOT_FOUND");
-                // BUG FIX 2: Removed ws.close() here! The Joiner's socket stays open so they can keep browsing!
                 return;
             }
 
             const room = gameRooms[targetCode];
-            
-            // BUG FIX 3: Prevent duplicate client entries if they rejoin the same room
-            if (ws.roomCode && gameRooms[ws.roomCode]) {
-                const oldRoom = gameRooms[ws.roomCode];
-                const index = oldRoom.clients.indexOf(ws);
-                if (index !== -1) oldRoom.clients.splice(index, 1);
-            }
-
             ws.roomCode = targetCode;
             ws.isHost = false;
+            room.clients.push(ws);
             
-            if (!room.clients.includes(ws)) {
-                room.clients.push(ws);
-            }
-            
-            console.log(`-> JOINER entered Room [${targetCode}].`);
+            console.log(`-> JOINER successfully entered Room [${targetCode}].`);
             room.host.send("J"); 
             ws.send("AUTH_OK"); 
             return;
         }
 
+        // ==========================================
+        // 4. IN-GAME PACKET BROADCAST
+        // ==========================================
         if (ws.roomCode && gameRooms[ws.roomCode]) {
             const room = gameRooms[ws.roomCode];
             room.clients.forEach((client) => {
-                if (client !== ws && client.readyState === WebSocket.OPEN) client.send(line);
+                if (client !== ws && client.readyState === WebSocket.OPEN) {
+                    client.send(line);
+                }
             });
         }
     });
 
     ws.on('close', () => {
-        if (ws.roomCode && gameRooms[ws.roomCode]) {
-            const room = gameRooms[ws.roomCode];
-            if (ws.isHost) {
-                console.log(`-> Host disconnected. Room [${ws.roomCode}] destroyed.`);
-                room.clients.forEach(c => { if(c !== ws) c.close(); });
-                delete gameRooms[ws.roomCode];
-            } else {
-                const index = room.clients.indexOf(ws);
-                if (index !== -1) room.clients.splice(index, 1);
-            }
-        }
+        purgeOldState(ws); // Ensure everything burns down if the connection drops
     });
 });
