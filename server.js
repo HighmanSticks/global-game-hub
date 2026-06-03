@@ -3,16 +3,15 @@ const WebSocket = require('ws');
 // Read the dynamic port assigned by Render, defaulting to 8888 for local testing
 const PORT = process.env.PORT || 8888; 
 
-// Initialize the WebSocket Server on Render's required port binding
+// Initialize the WebSocket Server
 const wss = new WebSocket.Server({ port: PORT }, () => {
     console.log(`Global Production Matchmaking Hub live on port ${PORT}...`);
 });
 
 // Storage for active game rooms
-// Format: { "ROOM_CODE": { host: ws, clients: [ws1, ws2], privacy: "PUBLIC", name: "My Server" } }
+// Format: { "ROOM_CODE": { host: ws, clients: [ws1, ws2], isPublic: true, name: "Johan's Lobby", bots: 2, mode: "Survival" } }
 const gameRooms = {}; 
 
-// Helper to generate a random 5-letter Room Code
 function generateRoomCode() {
     let code;
     do {
@@ -30,41 +29,78 @@ wss.on('connection', (ws) => {
         const line = message.toString().trim();
         if (line.length === 0) return;
 
-        // 1. GLOBAL ROLE AUTHENTICATION: HOST CREATION
-        // Expects format: "ROLE:HOST:PRIVATE:Lobby Name" or "ROLE:HOST:PUBLIC:Lobby Name"
-        if (line.startsWith("ROLE:HOST")) {
-            const parts = line.split(":");
-            const privacy = parts[2] || "PUBLIC"; // Defaults to PUBLIC if missing
-            const lobbyName = parts.slice(3).join(":") || "Unnamed Server"; // Grabs the lobby name safely
+        // ==========================================
+        // 1. THE SERVER BROWSER: FETCH LOBBIES
+        // ==========================================
+        if (line.startsWith("GET_LOBBIES:")) {
+            let lobbyStrings = [];
             
+            // Loop through all active rooms and pull the public ones
+            for (let code in gameRooms) {
+                let room = gameRooms[code];
+                if (room.isPublic) {
+                    // Format: Name|IP/Code|Bots|Mode|Ping
+                    lobbyStrings.push(`${room.name}|${code}|${room.bots}|${room.mode}|${room.ping}`);
+                }
+            }
+            
+            console.log(`-> Sending ${lobbyStrings.length} public lobbies to a Joiner.`);
+            ws.send("LOBBY_LIST:" + lobbyStrings.join(","));
+            return;
+        }
+
+        // ==========================================
+        // 2. HOST CREATION (PRIVATE ROOM)
+        // ==========================================
+        if (line === "ROLE:HOST") {
             const roomCode = generateRoomCode();
-            
             ws.roomCode = roomCode;
             ws.isHost = true;
-            ws.privacy = privacy;
-            ws.lobbyName = lobbyName;
 
             gameRooms[roomCode] = {
                 host: ws,
                 clients: [ws],
-                privacy: privacy,
-                name: lobbyName
+                isPublic: false // Hidden from Server Browser
             };
 
-            if (privacy === "PRIVATE") {
-                console.log(`-> PRIVATE LOBBY CREATED: [${lobbyName}] Code [${roomCode}]`);
-            } else {
-                console.log(`-> PUBLIC LOBBY CREATED: [${lobbyName}] Code [${roomCode}]`);
-            }
-            
-            // Send the code back down to the bridge/host
+            console.log(`-> PRIVATE LOBBY CREATED: Code [${roomCode}]`);
+            ws.send(`ROOM_CODE:${roomCode}`);
+            return;
+        }
+
+        // ==========================================
+        // 3. HOST CREATION (PUBLIC ROOM)
+        // Format expected: CREATE_PUBLIC:LobbyName|Bots|Mode
+        // ==========================================
+        if (line.startsWith("CREATE_PUBLIC:")) {
+            const parts = line.substring(14).split("|");
+            const roomName = parts[0] || "Public Match";
+            const bots = parseInt(parts[1]) || 0;
+            const mode = parts[2] || "VS Mode";
+
+            const roomCode = generateRoomCode();
+            ws.roomCode = roomCode;
+            ws.isHost = true;
+
+            gameRooms[roomCode] = {
+                host: ws,
+                clients: [ws],
+                isPublic: true,
+                name: roomName,
+                bots: bots,
+                mode: mode,
+                ping: Math.floor(Math.random() * 40) + 20 // Simulate a realistic ping 20-60ms
+            };
+
+            console.log(`-> PUBLIC LOBBY CREATED: [${roomCode}] - ${roomName}`);
             ws.send(`ROOM_CODE:${roomCode}`);
             return;
         }
         
-        // 2. GLOBAL ROLE AUTHENTICATION: JOINER CONNECTION
-        // Expects format: "ROLE:CLIENT:XXXXX"
-        if (line.startsWith("ROLE:CLIENT:")) {
+        // ==========================================
+        // 4. JOINER CONNECTION
+        // ==========================================
+        if (line.indexOf("ROLE:CLIENT:") === 0) {
             const targetCode = line.split(":")[2].toUpperCase();
 
             if (!gameRooms[targetCode]) {
@@ -81,13 +117,14 @@ wss.on('connection', (ws) => {
             room.clients.push(ws);
             console.log(`-> JOINER entered Room [${targetCode}].`);
             
-            // Alert the Host and authorize the Joiner
             room.host.send("J"); 
             ws.send("AUTH_OK"); 
             return;
         }
 
-        // 3. ROOM-ISOLATED REALTIME BROADCAST
+        // ==========================================
+        // 5. IN-GAME REALTIME BROADCAST
+        // ==========================================
         if (ws.roomCode && gameRooms[ws.roomCode]) {
             const room = gameRooms[ws.roomCode];
             room.clients.forEach((client) => {
