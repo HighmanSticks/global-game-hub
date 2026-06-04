@@ -15,18 +15,15 @@ function generateRoomCode() {
     return code;
 }
 
-// THE FIX: Aggressive Cleanup Protocol
 function purgeOldState(ws) {
     for (let code in gameRooms) {
         const room = gameRooms[code];
         
-        // If they were a Host, destroy their ghost lobby
         if (room.host === ws) {
             console.log(`-> Host moved on. Vaporizing Ghost Room [${code}].`);
             room.clients.forEach(c => { if(c !== ws && c.readyState === WebSocket.OPEN) c.send("ERROR:HOST_LEFT"); });
             delete gameRooms[code];
         } else {
-            // If they were a Joiner, remove them so they can rejoin later without "Invalid Code"
             const index = room.clients.indexOf(ws);
             if (index !== -1) {
                 room.clients.splice(index, 1);
@@ -38,6 +35,11 @@ function purgeOldState(ws) {
 }
 
 wss.on('connection', (ws) => {
+    // THE 800ms FIX: Disable Nagle's Algorithm! Send packets instantly!
+    if (ws._socket) {
+        ws._socket.setNoDelay(true);
+    }
+
     ws.roomCode = null;
     ws.isHost = false;
 
@@ -45,17 +47,13 @@ wss.on('connection', (ws) => {
         const line = message.toString().trim();
         if (line.length === 0) return;
 
-        // Keep-Alive for the bridge
         if (line === "KEEPALIVE_PING") {
             ws.send("KEEPALIVE_PONG");
             return;
         }
 
-        // ==========================================
-        // 1. BROWSER: Purge old state before fetching
-        // ==========================================
         if (line.startsWith("GET_LOBBIES:")) {
-            purgeOldState(ws); // Kill ghost lobbies before broadcasting
+            purgeOldState(ws); 
             
             let lobbyStrings = [];
             for (let code in gameRooms) {
@@ -68,9 +66,6 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        // ==========================================
-        // 2. HOSTING: Purge old state before creating
-        // ==========================================
         if (line === "ROLE:HOST") {
             purgeOldState(ws);
             
@@ -102,11 +97,8 @@ wss.on('connection', (ws) => {
             return;
         }
         
-        // ==========================================
-        // 3. JOINING: Purge old state before connecting
-        // ==========================================
         if (line.indexOf("ROLE:CLIENT:") === 0) {
-            purgeOldState(ws); // Allows seamless re-joining!
+            purgeOldState(ws); 
             
             const targetCode = line.split(":")[2].toUpperCase();
 
@@ -127,19 +119,27 @@ wss.on('connection', (ws) => {
         }
 
         // ==========================================
-        // 4. IN-GAME PACKET BROADCAST
+        // 4. IN-GAME PACKET BROADCAST (THE LOCKSTEP ECHO)
         // ==========================================
         if (ws.roomCode && gameRooms[ws.roomCode]) {
             const room = gameRooms[ws.roomCode];
             room.clients.forEach((client) => {
-                if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    client.send(line);
+                if (client.readyState === WebSocket.OPEN) {
+                    
+                    // IF it's a keystroke (D: or U:), bounce it back to EVERYONE including the sender!
+                    if (line.startsWith("D:") || line.startsWith("U:")) {
+                        client.send(line);
+                    }
+                    // For UI Menu Syncs, do NOT send it back to the sender
+                    else if (client !== ws) {
+                        client.send(line);
+                    }
                 }
             });
         }
     });
 
     ws.on('close', () => {
-        purgeOldState(ws); // Ensure everything burns down if the connection drops
+        purgeOldState(ws); 
     });
 });
