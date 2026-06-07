@@ -77,6 +77,8 @@ wss.on('connection', (ws) => {
             ws.roomCode = roomCode;
             ws.isHost = true;
             gameRooms[roomCode] = { host: ws, clients: [ws], isPublic: false };
+            
+            // FIX: DO NOT DELAY THIS. The Host needs the code instantly.
             ws.send(`ROOM_CODE:${roomCode}`);
             console.log(`-> HOST created Room [${roomCode}].`);
             return;
@@ -98,6 +100,8 @@ wss.on('connection', (ws) => {
                 host: ws, clients: [ws], isPublic: true, name: roomName, bots: bots, mode: mode,
                 ping: Math.floor(Math.random() * 40) + 20 
             };
+            
+            // FIX: DO NOT DELAY THIS.
             ws.send(`ROOM_CODE:${roomCode}`);
             console.log(`-> HOST created PUBLIC Room [${roomCode}].`);
             return;
@@ -127,11 +131,10 @@ wss.on('connection', (ws) => {
             
             console.log(`-> JOINER successfully entered Room [${targetCode}].`);
             
-            // 1. Tell the Joiner they are in so their screen starts loading
+            // 1. Tell the Joiner they are in so their screen starts loading instantly
             ws.send("AUTH_OK"); 
             
-            // 2. THE LATENCY FIX: Wait 500ms before telling the Host!
-            // This stops the Host from rapid-firing game state packets while the Joiner is still loading
+            // 2. THE LATENCY FIX: Wait 500ms before telling the Host to start the match
             setTimeout(() => {
                 if (room.host.readyState === WebSocket.OPEN) {
                     room.host.send("J"); 
