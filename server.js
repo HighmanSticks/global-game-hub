@@ -21,7 +21,9 @@ function purgeOldState(ws) {
         
         if (room.host === ws) {
             console.log(`-> Host moved on. Vaporizing Ghost Room [${code}].`);
-            room.clients.forEach(c => { if(c !== ws && c.readyState === WebSocket.OPEN) c.send("ERROR:HOST_LEFT"); });
+            room.clients.forEach(c => { 
+                if (c !== ws && c.readyState === WebSocket.OPEN) c.send("ERROR:HOST_LEFT"); 
+            });
             delete gameRooms[code];
         } else {
             const index = room.clients.indexOf(ws);
@@ -35,7 +37,7 @@ function purgeOldState(ws) {
 }
 
 wss.on('connection', (ws) => {
-    // THE 800ms FIX: Disable Nagle's Algorithm! Send packets instantly!
+    // Disable Nagle's Algorithm for instant 0ms input transmission
     if (ws._socket) {
         ws._socket.setNoDelay(true);
     }
@@ -44,7 +46,9 @@ wss.on('connection', (ws) => {
     ws.isHost = false;
 
     ws.on('message', (message) => {
-        const line = message.toString().trim();
+        // Strip Windows carriage returns but DO NOT trim() trailing spaces
+        // Superfighters uses spaces in some packets (like player names)
+        const line = message.toString().replace(/\r/g, ''); 
         if (line.length === 0) return;
 
         if (line === "KEEPALIVE_PING") {
@@ -74,6 +78,7 @@ wss.on('connection', (ws) => {
             ws.isHost = true;
             gameRooms[roomCode] = { host: ws, clients: [ws], isPublic: false };
             ws.send(`ROOM_CODE:${roomCode}`);
+            console.log(`-> HOST created Room [${roomCode}].`);
             return;
         }
 
@@ -94,6 +99,7 @@ wss.on('connection', (ws) => {
                 ping: Math.floor(Math.random() * 40) + 20 
             };
             ws.send(`ROOM_CODE:${roomCode}`);
+            console.log(`-> HOST created PUBLIC Room [${roomCode}].`);
             return;
         }
         
@@ -108,29 +114,46 @@ wss.on('connection', (ws) => {
             }
 
             const room = gameRooms[targetCode];
+
+            // STRICT LOCK: Prevent 3rd players from joining and causing a desync
+            if (room.clients.length >= 2) {
+                ws.send("ERROR:ROOM_FULL");
+                return;
+            }
+
             ws.roomCode = targetCode;
             ws.isHost = false;
             room.clients.push(ws);
             
             console.log(`-> JOINER successfully entered Room [${targetCode}].`);
-            room.host.send("J"); 
+            
+            // 1. Tell the Joiner they are in so their screen starts loading
             ws.send("AUTH_OK"); 
+            
+            // 2. THE LATENCY FIX: Wait 500ms before telling the Host!
+            // This stops the Host from rapid-firing game state packets while the Joiner is still loading
+            setTimeout(() => {
+                if (room.host.readyState === WebSocket.OPEN) {
+                    room.host.send("J"); 
+                }
+            }, 500);
+            
             return;
         }
 
         // ==========================================
-        // 4. IN-GAME PACKET BROADCAST (THE LOCKSTEP ECHO)
+        // IN-GAME PACKET BROADCAST (THE LOCKSTEP ECHO)
         // ==========================================
         if (ws.roomCode && gameRooms[ws.roomCode]) {
             const room = gameRooms[ws.roomCode];
             room.clients.forEach((client) => {
                 if (client.readyState === WebSocket.OPEN) {
                     
-                    // IF it's a keystroke (D: or U:), bounce it back to EVERYONE including the sender!
+                    // Keystrokes (D: or U:) bounce back to EVERYONE including the sender
                     if (line.startsWith("D:") || line.startsWith("U:")) {
                         client.send(line);
                     }
-                    // For UI Menu Syncs, do NOT send it back to the sender
+                    // UI and Menu Syncs do NOT send back to the sender
                     else if (client !== ws) {
                         client.send(line);
                     }
