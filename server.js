@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 const planck = require('planck-js');
-const MapLoader = require('./MapLoader'); // Pulls the blueprints from your other file
+const MapLoader = require('./MapLoader'); // Pulls the blueprints from your MapLoader.js
 
 const PORT = process.env.PORT || 8888; 
 const wss = new WebSocket.Server({ port: PORT }, () => {
@@ -30,7 +30,6 @@ function purgeOldState(ws) {
             room.clients.forEach(c => { 
                 if (c !== ws && c.readyState === WebSocket.OPEN) c.send("ERROR:HOST_LEFT"); 
             });
-            // The JavaScript garbage collector will automatically wipe the Box2D world
             delete gameRooms[code]; 
         } else {
             const index = room.clients.indexOf(ws);
@@ -53,7 +52,6 @@ wss.on('connection', (ws) => {
     ws.isHost = false;
 
     ws.on('message', (message) => {
-        // Strip Windows carriage returns but DO NOT trim() trailing spaces
         const line = message.toString().replace(/\r/g, ''); 
         if (line.length === 0) return;
 
@@ -63,7 +61,7 @@ wss.on('connection', (ws) => {
         }
 
         // ==========================================
-        // MATCHMAKING & LOBBY LOGIC (UNTOUCHED)
+        // MATCHMAKING & LOBBY LOGIC
         // ==========================================
 
         if (line.startsWith("GET_LOBBIES:")) {
@@ -87,13 +85,13 @@ wss.on('connection', (ws) => {
             ws.roomCode = roomCode;
             ws.isHost = true;
             
-            // Initialize a fresh physics world for this room
             gameRooms[roomCode] = { 
                 host: ws, 
                 clients: [ws], 
                 isPublic: false,
-                world: planck.World(planck.Vec2(0, 10)), // 10 is standard downward gravity
-                players: {} 
+                world: planck.World(planck.Vec2(0, 10)), 
+                players: {},
+                objects: {} // <--- ADDED: Tracks destructible map objects
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -122,7 +120,8 @@ wss.on('connection', (ws) => {
                 mode: mode,
                 ping: Math.floor(Math.random() * 40) + 20,
                 world: planck.World(planck.Vec2(0, 10)),
-                players: {} 
+                players: {},
+                objects: {} // <--- ADDED: Tracks destructible map objects
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -142,7 +141,6 @@ wss.on('connection', (ws) => {
 
             const room = gameRooms[targetCode];
 
-            // STRICT LOCK: Prevent 3rd players from joining
             if (room.clients.length >= 2) {
                 ws.send("ERROR:ROOM_FULL");
                 return;
@@ -172,57 +170,75 @@ wss.on('connection', (ws) => {
         if (ws.roomCode && gameRooms[ws.roomCode]) {
             const room = gameRooms[ws.roomCode];
 
-            // 1. MATCH START / MAP LOAD
-            // Intercepts the "S" packet the Host sends when starting the game
-            if (line.startsWith("S:") && ws.isHost) {
-                const parts = line.split(":");
-                const mapId = parseInt(parts[1]); 
-                
-                // Instruct MapLoader to build the static walls
+            // 1. MAP LOADING TRIGGER
+            if (line.startsWith("LOAD_MAP:") && ws.isHost) {
+                const mapId = parseInt(line.split(":")[1]); 
                 MapLoader.loadMap(room.world, mapId);
                 
-                // Spawn dynamic player bodies in the server sky (divided by 30 for Box2D meters)
                 room.players["P1"] = room.world.createDynamicBody(planck.Vec2(150/30, 50/30));
                 room.players["P2"] = room.world.createDynamicBody(planck.Vec2(450/30, 50/30));
                 
-                // Set shapes for the players so they can hit walls (Assuming generic player height)
                 room.players["P1"].createFixture(planck.Box(10/30, 20/30), { density: 1.0, friction: 0.3 });
                 room.players["P2"].createFixture(planck.Box(10/30, 20/30), { density: 1.0, friction: 0.3 });
+                return;
+            }
 
-                // Broadcast match start to everyone
+            // Legacy Start Trigger (Still needed to kick off the clients)
+            if (line.startsWith("S:") && ws.isHost) {
                 room.clients.forEach(c => {
                     if (c.readyState === WebSocket.OPEN) c.send(line);
                 });
                 return;
             }
 
-            // 2. RECEIVING MOVEMENT INTENTS FROM FLASH
-            if (line.startsWith("INTENT:")) {
+            // 2. RAW KEYBOARD INPUTS TO PHYSICS (D: and U:)
+            if (line.startsWith("D:") || line.startsWith("U:")) {
                 const parts = line.split(":");
-                const action = parts[1]; // e.g., "JUMP", "LEFT", "RIGHT"
-                const playerId = ws.isHost ? "P1" : "P2"; // Determine who sent this
+                const state = parts[0]; // "D" for Down, "U" for Up
+                const netKey = parseInt(parts[1]);
+                
+                const playerId = (netKey >= 200 && netKey < 300) ? "P1" : "P2";
+                const keyIdx = netKey % 100; // 0=Up/Jump, 1=Down, 2=Left, 3=Right
+                
+                // Echo the keystroke to clients so the visual animations still play
+                room.clients.forEach(c => {
+                    if (c !== ws && c.readyState === WebSocket.OPEN) c.send(line);
+                });
 
+                // Apply Planck.js Physics based on the key
                 if (room.players[playerId]) {
                     const playerBody = room.players[playerId];
                     const currentVel = playerBody.getLinearVelocity();
 
-                    // Apply impulses or velocities based on the action
-                    // (These numbers will need tweaking to perfectly match your Flash feel)
-                    if (action === "JUMP") {
-                        playerBody.setLinearVelocity(planck.Vec2(currentVel.x, -6));
-                    } else if (action === "LEFT") {
-                        playerBody.setLinearVelocity(planck.Vec2(-4, currentVel.y));
-                    } else if (action === "RIGHT") {
-                        playerBody.setLinearVelocity(planck.Vec2(4, currentVel.y));
-                    } else if (action === "STOP") {
-                        playerBody.setLinearVelocity(planck.Vec2(0, currentVel.y));
+                    if (state === "D") {
+                        if (keyIdx === 0) { // Up / Jump
+                            playerBody.setLinearVelocity(planck.Vec2(currentVel.x, -10)); 
+                        } else if (keyIdx === 2) { // Left
+                            playerBody.setLinearVelocity(planck.Vec2(-7, currentVel.y));
+                        } else if (keyIdx === 3) { // Right
+                            playerBody.setLinearVelocity(planck.Vec2(7, currentVel.y));
+                        }
+                    } 
+                    else if (state === "U") {
+                        if (keyIdx === 2 || keyIdx === 3) { // Stop horizontal on release
+                             playerBody.setLinearVelocity(planck.Vec2(0, currentVel.y));
+                        }
                     }
                 }
                 return;
             }
 
-            // 3. UI/MENU SYNC PASS-THROUGH
-            // Certain UI packets still need to bounce without physics processing
+            // 3. DESTRUCTION FIX (Crates blowing up)
+            if (line.startsWith("INTENT:DESTROY:")) {
+                const objectId = line.split(":")[2];
+                // Broadcast to everyone to delete this object instantly so it doesn't get stuck
+                room.clients.forEach(c => {
+                    if (c.readyState === WebSocket.OPEN) c.send(`DELETE:${objectId}`);
+                });
+                return;
+            }
+
+            // 4. UI/MENU SYNC PASS-THROUGH
             if (line.startsWith("SYNC_MENU")) {
                 room.clients.forEach(c => {
                     if (c !== ws && c.readyState === WebSocket.OPEN) {
@@ -245,12 +261,12 @@ setInterval(() => {
     for (let code in gameRooms) {
         const room = gameRooms[code];
         
-        // 1. Move physics time forward by 1 frame (24 FPS)
+        // 1. Move physics time forward by 1 frame
         if (room.world) {
             room.world.step(1 / FPS);
         }
         
-        // 2. Transmit coordinates back to Flash clients over WebSockets
+        // 2. Transmit coordinates back to Flash clients
         if (room.players["P1"] && room.players["P2"]) {
             const p1Pos = room.players["P1"].getPosition();
             const p2Pos = room.players["P2"].getPosition();
