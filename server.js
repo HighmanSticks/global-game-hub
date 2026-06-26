@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 const planck = require('planck-js');
-const MapLoader = require('./MapLoader'); // Pulls the blueprints from your MapLoader.js
+const MapLoader = require('./MapLoader');
 
 const PORT = process.env.PORT || 8888; 
 const wss = new WebSocket.Server({ port: PORT }, () => {
@@ -43,7 +43,6 @@ function purgeOldState(ws) {
 }
 
 wss.on('connection', (ws) => {
-    // Disable Nagle's Algorithm for instant 0ms input transmission
     if (ws._socket) {
         ws._socket.setNoDelay(true);
     }
@@ -91,7 +90,7 @@ wss.on('connection', (ws) => {
                 isPublic: false,
                 world: planck.World(planck.Vec2(0, 10)), 
                 players: {},
-                objects: {} // <--- ADDED: Tracks destructible map objects
+                objects: {} // Tracks destructible map objects
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -121,7 +120,7 @@ wss.on('connection', (ws) => {
                 ping: Math.floor(Math.random() * 40) + 20,
                 world: planck.World(planck.Vec2(0, 10)),
                 players: {},
-                objects: {} // <--- ADDED: Tracks destructible map objects
+                objects: {} 
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -173,8 +172,9 @@ wss.on('connection', (ws) => {
             // 1. MAP LOADING TRIGGER
             if (line.startsWith("LOAD_MAP:") && ws.isHost) {
                 const mapId = parseInt(line.split(":")[1]); 
-                MapLoader.loadMap(room.world, mapId);
+                MapLoader.loadMap(room, mapId); // Passes 'room' so it can spawn crates into 'objects'
                 
+                // Base player spawns
                 room.players["P1"] = room.world.createDynamicBody(planck.Vec2(150/30, 50/30));
                 room.players["P2"] = room.world.createDynamicBody(planck.Vec2(450/30, 50/30));
                 
@@ -183,7 +183,7 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            // Legacy Start Trigger (Still needed to kick off the clients)
+            // Legacy Start Trigger (Pass-through for UI to drop the barrier)
             if (line.startsWith("S:") && ws.isHost) {
                 room.clients.forEach(c => {
                     if (c.readyState === WebSocket.OPEN) c.send(line);
@@ -191,36 +191,35 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            // 2. RAW KEYBOARD INPUTS TO PHYSICS (D: and U:)
+            // 2. RAW KEYBOARD INPUTS TO PHYSICS
             if (line.startsWith("D:") || line.startsWith("U:")) {
                 const parts = line.split(":");
-                const state = parts[0]; // "D" for Down, "U" for Up
+                const state = parts[0]; 
                 const netKey = parseInt(parts[1]);
                 
                 const playerId = (netKey >= 200 && netKey < 300) ? "P1" : "P2";
                 const keyIdx = netKey % 100; // 0=Up/Jump, 1=Down, 2=Left, 3=Right
                 
-                // Echo the keystroke to clients so the visual animations still play
+                // Echo the keystroke to clients for animation sync
                 room.clients.forEach(c => {
                     if (c !== ws && c.readyState === WebSocket.OPEN) c.send(line);
                 });
 
-                // Apply Planck.js Physics based on the key
                 if (room.players[playerId]) {
                     const playerBody = room.players[playerId];
                     const currentVel = playerBody.getLinearVelocity();
 
                     if (state === "D") {
-                        if (keyIdx === 0) { // Up / Jump
+                        if (keyIdx === 0) { 
                             playerBody.setLinearVelocity(planck.Vec2(currentVel.x, -10)); 
-                        } else if (keyIdx === 2) { // Left
+                        } else if (keyIdx === 2) { 
                             playerBody.setLinearVelocity(planck.Vec2(-7, currentVel.y));
-                        } else if (keyIdx === 3) { // Right
+                        } else if (keyIdx === 3) { 
                             playerBody.setLinearVelocity(planck.Vec2(7, currentVel.y));
                         }
                     } 
                     else if (state === "U") {
-                        if (keyIdx === 2 || keyIdx === 3) { // Stop horizontal on release
+                        if (keyIdx === 2 || keyIdx === 3) { 
                              playerBody.setLinearVelocity(planck.Vec2(0, currentVel.y));
                         }
                     }
@@ -228,10 +227,17 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            // 3. DESTRUCTION FIX (Crates blowing up)
+            // 3. DESTRUCTION EVENT (Crates & Barrels blowing up)
             if (line.startsWith("INTENT:DESTROY:")) {
                 const objectId = line.split(":")[2];
-                // Broadcast to everyone to delete this object instantly so it doesn't get stuck
+                
+                if (room.objects[objectId]) {
+                    // Remove from server physics engine
+                    room.world.destroyBody(room.objects[objectId]);
+                    delete room.objects[objectId];
+                }
+                
+                // Broadcast to clients to delete it visually
                 room.clients.forEach(c => {
                     if (c.readyState === WebSocket.OPEN) c.send(`DELETE:${objectId}`);
                 });
@@ -261,25 +267,33 @@ setInterval(() => {
     for (let code in gameRooms) {
         const room = gameRooms[code];
         
-        // 1. Move physics time forward by 1 frame
         if (room.world) {
             room.world.step(1 / FPS);
         }
         
-        // 2. Transmit coordinates back to Flash clients
+        // 1. Transmit Player Coordinates
         if (room.players["P1"] && room.players["P2"]) {
             const p1Pos = room.players["P1"].getPosition();
             const p2Pos = room.players["P2"].getPosition();
             
-            // Multiply by 30 to convert from Box2D meters back to Flash pixels
-            const p1Packet = `POS:P1:${(p1Pos.x * 30).toFixed(1)}:${(p1Pos.y * 30).toFixed(1)}`;
-            const p2Packet = `POS:P2:${(p2Pos.x * 30).toFixed(1)}:${(p2Pos.y * 30).toFixed(1)}`;
+            const p1Packet = `POS:P1:${(p1Pos.x * 30).toFixed(1)}:${(p1Pos.y * 30).toFixed(1)}\n`;
+            const p2Packet = `POS:P2:${(p2Pos.x * 30).toFixed(1)}:${(p2Pos.y * 30).toFixed(1)}\n`;
             
-            room.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(p1Packet);
-                    client.send(p2Packet);
-                }
+            room.clients.forEach(c => {
+                if (c.readyState === 1) { c.send(p1Packet); c.send(p2Packet); }
+            });
+        }
+
+        // 2. Transmit Dynamic Object Coordinates
+        for (let objId in room.objects) {
+            const objBody = room.objects[objId];
+            const pos = objBody.getPosition();
+            const angle = objBody.getAngle() * (180 / Math.PI); 
+            
+            const objPacket = `POS:OBJ:${objId}:${(pos.x * 30).toFixed(1)}:${(pos.y * 30).toFixed(1)}:${angle.toFixed(1)}\n`;
+            
+            room.clients.forEach(c => {
+                if (c.readyState === 1) c.send(objPacket);
             });
         }
     }
