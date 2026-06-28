@@ -88,9 +88,9 @@ wss.on('connection', (ws) => {
                 host: ws, 
                 clients: [ws], 
                 isPublic: false,
-                world: planck.World(planck.Vec2(0, 10)), 
-                players: {},
-                objects: {} // Tracks destructible map objects
+                world: MapLoader.createPhysicsWorld(),
+players: {},
+objects: {}
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -118,9 +118,9 @@ wss.on('connection', (ws) => {
                 bots: bots, 
                 mode: mode,
                 ping: Math.floor(Math.random() * 40) + 20,
-                world: planck.World(planck.Vec2(0, 10)),
-                players: {},
-                objects: {} 
+                world: MapLoader.createPhysicsWorld(),
+players: {},
+objects: {}
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -178,8 +178,27 @@ wss.on('connection', (ws) => {
                 room.players["P1"] = room.world.createDynamicBody(planck.Vec2(150/30, 50/30));
                 room.players["P2"] = room.world.createDynamicBody(planck.Vec2(450/30, 50/30));
                 
-                room.players["P1"].createFixture(planck.Box(10/30, 20/30), { density: 1.0, friction: 0.3 });
-                room.players["P2"].createFixture(planck.Box(10/30, 20/30), { density: 1.0, friction: 0.3 });
+               const playerFixture = {
+    density: 1.0,
+    friction: 0.3,
+    filter: {
+        categoryBits: MapLoader.COLLISION.PLAYER,
+        maskBits:
+            MapLoader.COLLISION.SOLID |
+            MapLoader.COLLISION.DYNAMIC |
+            MapLoader.COLLISION.LADDER
+    }
+};
+
+room.players["P1"].createFixture(
+    planck.Box(10 / 30, 20 / 30),
+    playerFixture
+);
+
+room.players["P2"].createFixture(
+    planck.Box(10 / 30, 20 / 30),
+    playerFixture
+);
                 return;
             }
 
@@ -268,8 +287,8 @@ setInterval(() => {
         const room = gameRooms[code];
         
         if (room.world) {
-            room.world.step(1 / FPS);
-        }
+    MapLoader.stepPhysics(room);
+}
         
         // 1. Transmit Player Coordinates
         if (room.players["P1"] && room.players["P2"]) {
