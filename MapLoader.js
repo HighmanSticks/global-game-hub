@@ -514,17 +514,22 @@ function getStatePacket(room) {
         time: room.time,
         objects: getDynamicSnapshot(room),
         players: Object.fromEntries(
-            Object.entries(room.players).map(([id, p]) => [id, {
-                x: p.x,
-                y: p.y,
-                vx: p.vx || 0,
-                vy: p.vy || 0,
-                facing: p.facing || 1,
-            }])
+            Object.entries(room.players).map(([id, p]) => {
+                const pos = p.getPosition();
+                const vel = p.getLinearVelocity();
+                const userData = p.getUserData() || {}; // In case you store facing dir here later
+                
+                return [id, {
+                    x: pos.x * SCALE,     // Convert back to pixels for the client
+                    y: pos.y * SCALE,
+                    vx: vel.x * SCALE, 
+                    vy: vel.y * SCALE,
+                    facing: userData.facing || 1,
+                }];
+            })
         ),
     };
 }
-
 function querySolidAt(room, px, py) {
     const point = planck.Vec2(px / SCALE, py / SCALE);
     let hit = null;
