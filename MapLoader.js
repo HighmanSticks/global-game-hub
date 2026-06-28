@@ -436,7 +436,14 @@ function loadMap(room, mapId, options = {}) {
     console.log(`[MapLoader] Building physics + render data for map ${mapId}`);
 
     room.mapId = mapId;
-    room.staticRender.length = 0;
+    
+    // Safely initialize the array if it's missing, otherwise clear the existing one
+    if (!room.staticRender) {
+        room.staticRender = [];
+    } else {
+        room.staticRender.length = 0;
+    }
+    
     room.dynamicRender = {};
     room.objects = {};
 
@@ -448,7 +455,6 @@ function loadMap(room, mapId, options = {}) {
     spawnDefaultDynamics(room, mapId);
     return room;
 }
-
 function spawnDefaultDynamics(room, mapId) {
     // Optional deterministic crate/barrel spawns for maps that always place them.
     // Full AddObject(...) randomness from Maps.as is not replicated here.
