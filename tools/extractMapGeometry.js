@@ -4,7 +4,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { parseAllMapsFromSource } = require('../maploader');
+const { parseAllMapsFromSource } = require('../MapLoader');
 
 const mapsPath = path.join(__dirname, '..', 'Code', 'Handler', 'Maps.as');
 const outPath = path.join(__dirname, '..', 'mapGeometry.json');
