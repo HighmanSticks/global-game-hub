@@ -89,8 +89,8 @@ wss.on('connection', (ws) => {
                 clients: [ws], 
                 isPublic: false,
                 world: MapLoader.createPhysicsWorld(),
-players: {},
-objects: {}
+                players: {},
+                objects: {}
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -119,8 +119,8 @@ objects: {}
                 mode: mode,
                 ping: Math.floor(Math.random() * 40) + 20,
                 world: MapLoader.createPhysicsWorld(),
-players: {},
-objects: {}
+                players: {},
+                objects: {}
             };
             
             ws.send(`ROOM_CODE:${roomCode}`);
@@ -172,33 +172,63 @@ objects: {}
             // 1. MAP LOADING TRIGGER
             if (line.startsWith("LOAD_MAP:") && ws.isHost) {
                 const mapId = parseInt(line.split(":")[1]); 
-                MapLoader.loadMap(room, mapId); // Passes 'room' so it can spawn crates into 'objects'
-                
-                // Base player spawns
-                room.players["P1"] = room.world.createDynamicBody(planck.Vec2(150/30, 50/30));
-                room.players["P2"] = room.world.createDynamicBody(planck.Vec2(450/30, 50/30));
-                
-               const playerFixture = {
-    density: 1.0,
-    friction: 0.3,
-    filter: {
-        categoryBits: MapLoader.COLLISION.PLAYER,
-        maskBits:
-            MapLoader.COLLISION.SOLID |
-            MapLoader.COLLISION.DYNAMIC |
-            MapLoader.COLLISION.LADDER
-    }
-};
+                MapLoader.loadMap(room, mapId); // Only load static map boundaries
+                return;
+            }
 
-room.players["P1"].createFixture(
-    planck.Box(10 / 30, 20 / 30),
-    playerFixture
-);
+            // ==========================================
+            // MAP INITIALIZATION FROM HOST
+            // ==========================================
+            if (line.startsWith("INIT_PLAYER:") && ws.isHost) {
+                const parts = line.split(":");
+                const pId = parts[1]; // "P1" or "P2"
+                const px = parseFloat(parts[2]) / 30; // Scale pixels down to Box2D meters
+                const py = parseFloat(parts[3]) / 30;
 
-room.players["P2"].createFixture(
-    planck.Box(10 / 30, 20 / 30),
-    playerFixture
-);
+                const playerBodyDef = {
+                    fixedRotation: true,
+                    bullet: true
+                };
+
+                // Destroy old body if it exists from a previous round
+                if (room.players[pId]) {
+                    room.world.destroyBody(room.players[pId]);
+                }
+
+                room.players[pId] = room.world.createDynamicBody({
+                    ...playerBodyDef,
+                    position: planck.Vec2(px, py)
+                });
+
+                room.players[pId].createFixture(
+                    planck.Box(10 / 30, 20 / 30),
+                    {
+                        density: 1.0,
+                        friction: 0.0, // Prevents wall-sticking
+                        filter: {
+                            categoryBits: MapLoader.COLLISION.PLAYER,
+                            maskBits: MapLoader.COLLISION.SOLID | MapLoader.COLLISION.DYNAMIC | MapLoader.COLLISION.LADDER
+                        }
+                    }
+                );
+                return;
+            }
+
+            if (line.startsWith("INIT_OBJ:") && ws.isHost) {
+                const parts = line.split(":");
+                const objId = parts[1];
+                const ox = parseFloat(parts[2]) / 30;
+                const oy = parseFloat(parts[3]) / 30;
+                const orot = parseFloat(parts[4]) * (Math.PI / 180);
+                const ow = parseFloat(parts[5]) / 30;
+                const oh = parseFloat(parts[6]) / 30;
+
+                // Create the Planck.js crate based on the Flash client's exact coordinates and dimensions
+                MapLoader.createDynamicObject(room, objId, ox, oy, ow, oh, { material: 'wood', density: 1.0 });
+                
+                if (room.objects[objId]) {
+                    room.objects[objId].setAngle(orot);
+                }
                 return;
             }
 
@@ -287,8 +317,8 @@ setInterval(() => {
         const room = gameRooms[code];
         
         if (room.world) {
-    MapLoader.stepPhysics(room);
-}
+            MapLoader.stepPhysics(room);
+        }
         
         // 1. Transmit Player Coordinates
         if (room.players["P1"] && room.players["P2"]) {
