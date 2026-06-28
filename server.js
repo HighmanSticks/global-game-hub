@@ -320,16 +320,20 @@ setInterval(() => {
             MapLoader.stepPhysics(room);
         }
         
-        // 1. Transmit Player Coordinates
-        if (room.players["P1"] && room.players["P2"]) {
+       // 1. Transmit Player Coordinates Independently
+        if (room.players["P1"]) {
             const p1Pos = room.players["P1"].getPosition();
-            const p2Pos = room.players["P2"].getPosition();
-            
             const p1Packet = `POS:P1:${(p1Pos.x * 30).toFixed(1)}:${(p1Pos.y * 30).toFixed(1)}\n`;
-            const p2Packet = `POS:P2:${(p2Pos.x * 30).toFixed(1)}:${(p2Pos.y * 30).toFixed(1)}\n`;
-            
             room.clients.forEach(c => {
-                if (c.readyState === 1) { c.send(p1Packet); c.send(p2Packet); }
+                if (c.readyState === 1) c.send(p1Packet);
+            });
+        }
+
+        if (room.players["P2"]) {
+            const p2Pos = room.players["P2"].getPosition();
+            const p2Packet = `POS:P2:${(p2Pos.x * 30).toFixed(1)}:${(p2Pos.y * 30).toFixed(1)}\n`;
+            room.clients.forEach(c => {
+                if (c.readyState === 1) c.send(p2Packet);
             });
         }
 
