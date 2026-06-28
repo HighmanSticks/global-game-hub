@@ -375,8 +375,24 @@ function spawnStaticShape(world, shape, renderList) {
 }
 
 function createDynamicObject(room, id, x, y, width, height, options = {}) {
+    if (!room) {
+        throw new Error("createDynamicObject(): room is undefined");
+    }
+
+    if (!room.world) {
+        throw new Error("createDynamicObject(): room.world is undefined");
+    }
+
+    // Initialize missing containers instead of crashing.
+    room.objects ??= {};
+    room.dynamicRender ??= {};
+    room.players ??= {};
+    room.staticRender ??= [];
+
     const mat = getMaterial(options.material || 'wood');
-    const density = options.density != null ? options.density : (options.isHeavy ? 2.0 : 1.0);
+    const density = options.density != null
+        ? options.density
+        : (options.isHeavy ? 2.0 : 1.0);
 
     const body = room.world.createDynamicBody({
         position: planck.Vec2(x, y),
@@ -396,11 +412,15 @@ function createDynamicObject(room, id, x, y, width, height, options = {}) {
         restitution: mat.restitution,
         filter: {
             categoryBits: COLLISION.DYNAMIC,
-            maskBits: COLLISION.SOLID | COLLISION.DYNAMIC | COLLISION.PLAYER,
+            maskBits:
+                COLLISION.SOLID |
+                COLLISION.DYNAMIC |
+                COLLISION.PLAYER,
         },
     });
 
     room.objects[id] = body;
+
     room.dynamicRender[id] = {
         type: 'box',
         layer: 'dynamic',
@@ -408,9 +428,9 @@ function createDynamicObject(room, id, x, y, width, height, options = {}) {
         width: width * SCALE,
         height: height * SCALE,
     };
+
     return body;
 }
-
 // ==========================================
 // Room lifecycle + physics stepping
 // ==========================================
@@ -435,24 +455,28 @@ function createRoom(mapId, options = {}) {
 function loadMap(room, mapId, options = {}) {
     console.log(`[MapLoader] Building physics + render data for map ${mapId}`);
 
-    room.mapId = mapId;
-    
-    // Safely initialize the array if it's missing, otherwise clear the existing one
-    if (!room.staticRender) {
-        room.staticRender = [];
-    } else {
-        room.staticRender.length = 0;
+    if (!room.world) {
+        room.world = createPhysicsWorld();
     }
-    
-    room.dynamicRender = {};
+
+    room.mapId = mapId;
+    room.objects ??= {};
+    room.players ??= {};
+    room.staticRender ??= [];
+    room.dynamicRender ??= {};
+
     room.objects = {};
+    room.dynamicRender = {};
+    room.staticRender.length = 0;
 
     const shapes = loadMapGeometry(mapId, options);
+
     for (const shape of shapes) {
         spawnStaticShape(room.world, shape, room.staticRender);
     }
 
     spawnDefaultDynamics(room, mapId);
+
     return room;
 }
 function spawnDefaultDynamics(room, mapId) {
